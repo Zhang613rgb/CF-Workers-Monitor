@@ -329,6 +329,13 @@ body.dark-theme {
     margin: 10px 0;
     border: 1px solid rgba(198, 40, 40, 0.3);
 }
+.worker-detail-section { margin-top: 15px; padding-top: 15px; border-top: 2px solid var(--border); }
+.worker-detail-header { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 8px; font-weight: 600; }
+.worker-row { display: flex; align-items: center; margin: 6px 0; gap: 6px; font-size: 0.85rem; }
+.worker-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-primary); }
+.worker-count { width: 60px; text-align: right; color: var(--text-secondary); }
+.worker-bar { flex: 0 0 80px; height: 6px; background: var(--bg-primary); border-radius: 3px; overflow: hidden; }
+.worker-fill { height: 100%; background: linear-gradient(90deg, #F38020, #FCAD32); border-radius: 3px; }
 .last-update {
     text-align: center;
     color: var(--last-update-text);

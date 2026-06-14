@@ -4,13 +4,8 @@ const corsHeaders = {
     'Access-Control-Allow-Headers': 'Content-Type',
 };
 
-const cache = {
-    data: null,
-    lastUpdated: 0,
-    ttl: 1 * 60 * 1000,
-};
+const cache = { data: null, lastUpdated: 0, ttl: 1 * 60 * 1000 };
 
-// Pages Functions 的请求入口
 export async function onRequest(context) {
     const { request, env } = context;
     if (request.method === 'OPTIONS') {
@@ -24,22 +19,22 @@ async function handleAPIRequest(request, env) {
         const url = new URL(request.url);
         const isOptimized = url.searchParams.get('optimized') === 'true';
         const now = Date.now();
-        
+
         if (isOptimized && cache.data && now - cache.lastUpdated < cache.ttl) {
             return jsonResponse(cache.data);
         }
-        
+
         let EDGE;
         try {
             EDGE = JSON.parse(env.EDGE || '[]');
         } catch (e) {
             return jsonResponse({ error: '环境变量 EDGE 格式错误' }, 500);
         }
-        
+
         if (EDGE.length === 0) {
             return jsonResponse({ error: '没有配置账户信息' }, 400);
         }
-        
+
         const accountIndex = parseInt(url.searchParams.get('accountIndex')) || 0;
         const getAllAccounts = url.searchParams.get('all') === 'true';
 
@@ -68,9 +63,7 @@ async function fetchWithRetry(url, options = {}, maxRetries = 3, delay = 1000) {
         try {
             const response = await fetch(url, options);
             if (response.ok) return response;
-            if (response.status >= 500) {
-                throw new Error(`Server error: ${response.status}`);
-            }
+            if (response.status >= 500) throw new Error(`Server error: ${response.status}`);
             return response;
         } catch (error) {
             if (i === maxRetries - 1) throw error;
@@ -81,7 +74,6 @@ async function fetchWithRetry(url, options = {}, maxRetries = 3, delay = 1000) {
 
 async function getAccountData(account, accountIndex) {
     const { token, accountId, total = 100000 } = account;
-
     if (!token || !accountId) {
         throw new Error(`账户 ${accountIndex} 缺少 token 或 accountId`);
     }
@@ -89,12 +81,16 @@ async function getAccountData(account, accountIndex) {
     now.setUTCHours(0, 0, 0, 0);
     const startDate = now.toISOString();
     const endDate = new Date().toISOString();
-    
-    const { pagesSum = 0, workersSum = 0 } = await getSum(token, accountId, startDate, endDate);
-    
+
+    // 同时查询总量和按 Worker 拆分明细
+    const [sums, workersDetail] = await Promise.all([
+        getSum(token, accountId, startDate, endDate),
+        getWorkersDetail(token, accountId, startDate, endDate),
+    ]);
+
+    const { pagesSum = 0, workersSum = 0 } = sums;
     const remaining = total - pagesSum - workersSum;
     const percent = (remaining / total) * 100;
-    
     return {
         accountIndex,
         accountName: account.name || `Account ${accountIndex}`,
@@ -110,6 +106,7 @@ async function getAccountData(account, accountIndex) {
             remaining: remaining.toLocaleString(),
             total: formatNumber(total),
         },
+        workers: workersDetail, // 每个 Worker 的详细请求数
     };
 }
 
@@ -155,7 +152,6 @@ async function getAllAccountsDataOptimized(accounts) {
         },
         { pagesSum: 0, workersSum: 0, total: 0, remaining: 0 }
     );
-
     const overallPercent = totals.total > 0 ? (totals.remaining / totals.total) * 100 : 0;
     return {
         accounts: results,
@@ -178,76 +174,84 @@ async function getAccountDataWithRetry(account, accountIndex, maxRetries = 2) {
         try {
             return await getAccountData(account, accountIndex);
         } catch (error) {
-            if (attempt === maxRetries) {
-                throw error;
-            }
+            if (attempt === maxRetries) throw error;
             await new Promise((resolve) => setTimeout(resolve, 1000 * attempt));
         }
     }
 }
 
+// 查询总量
 async function getSum(token, accountId, startDate, endDate) {
     const query = {
         query: `query getBillingMetrics($accountId: string!, $filter: AccountWorkersInvocationsAdaptiveFilter_InputObject) {
       viewer {
         accounts(filter: {accountTag: $accountId}) {
           pagesFunctionsInvocationsAdaptiveGroups(limit: 1000, filter: $filter) {
-            sum {
-              requests
-            }
+            sum { requests }
           }
           workersInvocationsAdaptive(limit: 10000, filter: $filter) {
-            sum {
-              requests
-            }
+            sum { requests }
           }
         }
       }
     }`,
-        variables: {
-            accountId,
-            filter: { datetime_geq: startDate, datetime_leq: endDate },
-        },
+        variables: { accountId, filter: { datetime_geq: startDate, datetime_leq: endDate } },
     };
     const response = await fetchWithRetry(
         'https://api.cloudflare.com/client/v4/graphql',
-        {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify(query),
-        },
-        2,
-        1000
+        { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(query) },
+        2, 1000
     );
-    if (!response.ok) {
-        throw new Error(`API 请求失败: ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`API 请求失败: ${response.status}`);
     const data = await response.json();
-
-    if (data.errors) {
-        throw new Error(`GraphQL 错误: ${JSON.stringify(data.errors)}`);
-    }
+    if (data.errors) throw new Error(`GraphQL 错误: ${JSON.stringify(data.errors)}`);
     const accounts = data?.data?.viewer?.accounts;
-    if (!accounts || accounts.length === 0) {
-        throw new Error('未找到账户数据');
-    }
+    if (!accounts || accounts.length === 0) throw new Error('未找到账户数据');
     const accountData = accounts[0];
     const pagesGroups = accountData.pagesFunctionsInvocationsAdaptiveGroups || [];
     const workersData = accountData.workersInvocationsAdaptive || [];
-    
     const pagesSum = pagesGroups.reduce((sum, group) => sum + (group?.sum?.requests || 0), 0);
     const workersSum = workersData.reduce((sum, item) => sum + (item?.sum?.requests || 0), 0);
-    
     return { pagesSum, workersSum };
 }
 
+// 查询每个 Worker 的详细请求数（新增！）
+async function getWorkersDetail(token, accountId, startDate, endDate) {
+    const query = {
+        query: `query getWorkersDetail($accountId: string!, $filter: AccountWorkersInvocationsAdaptiveFilter_InputObject) {
+      viewer {
+        accounts(filter: {accountTag: $accountId}) {
+          workersInvocationsAdaptiveGroups(limit: 10000, filter: $filter) {
+            sum { requests }
+            dimensions { scriptName }
+          }
+        }
+      }
+    }`,
+        variables: { accountId, filter: { datetime_geq: startDate, datetime_leq: endDate } },
+    };
+    const response = await fetchWithRetry(
+        'https://api.cloudflare.com/client/v4/graphql',
+        { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(query) },
+        2, 1000
+    );
+    if (!response.ok) throw new Error(`Worker明细查询失败: ${response.status}`);
+    const data = await response.json();
+    if (data.errors) throw new Error(`明细查询错误: ${JSON.stringify(data.errors)}`);
+    const accounts = data?.data?.viewer?.accounts;
+    if (!accounts || accounts.length === 0) return [];
+    const groups = accounts[0].workersInvocationsAdaptiveGroups || [];
+    return groups
+        .map(g => ({
+            name: g.dimensions?.scriptName || 'unknown',
+            requests: g.sum?.requests || 0,
+        }))
+        .filter(w => w.requests > 0)
+        .sort((a, b) => b.requests - a.requests);
+}
+
 function formatNumber(num) {
-    if (num < 1000) {
-        return num.toString();
-    }
+    if (num < 1000) return num.toString();
     const suffixes = ['', 'k', 'm', 'b', 't'];
     let suffixIndex = 0;
     let formattedNum = num;
@@ -261,9 +265,6 @@ function formatNumber(num) {
 function jsonResponse(data, status = 200) {
     return new Response(JSON.stringify(data, null, 2), {
         status,
-        headers: {
-            'Content-Type': 'application/json',
-            ...corsHeaders,
-        },
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
     });
 }

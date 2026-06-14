@@ -184,6 +184,20 @@ function displaySingleAccount(account) {
 function createAccountCard(account) {
     const statusClass = getStatusClass(account.percent);
     const statusText = getStatusText(account.percent);
+    let workersHtml = '';
+    if (account.workers && account.workers.length > 0) {
+        const maxReq = account.workers[0].requests;
+        workersHtml = account.workers.map(w => {
+            const pct = maxReq > 0 ? (w.requests / maxReq * 100) : 0;
+            return `<div class="worker-row">
+                <span class="worker-name">${WORKER_SVG} ${w.name}</span>
+                <span class="worker-count">${w.requests.toLocaleString()}</span>
+                <div class="worker-bar">
+                    <div class="worker-fill" style="width:${pct}%"></div>
+                </div>
+            </div>`;
+        }).join('');
+    }
     return `
         <div class="card">
             <div class="account-header">
@@ -208,6 +222,10 @@ function createAccountCard(account) {
                     <div class="metric-label">${account.workersSum.toLocaleString()} 次</div>
                 </div>
             </div>
+            ${workersHtml ? `<div style="margin-top:15px;padding-top:15px;border-top:2px solid var(--border)">
+                <div style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:8px;font-weight:600">${WORKER_SVG} Workers 明细</div>
+                ${workersHtml}
+            </div>` : ''}
             <div class="progress-section">
                 <div class="progress-header">
                     <div class="progress-label">剩余额度</div>
