@@ -215,13 +215,15 @@ async function getSum(token, accountId, startDate, endDate) {
     return { pagesSum, workersSum };
 }
 
-// 查询每个 Worker 的详细请求数（新增！）
+// 查询每个 Worker 的详细请求数
+// 注意：workersInvocationsAdaptive 是 Cloudflare 命名规范之外的节点，没有 Groups 变体
+// 所以用 dimensions { scriptName } + JS 端按 scriptName 汇总
 async function getWorkersDetail(token, accountId, startDate, endDate) {
     const query = {
         query: `query getWorkersDetail($accountId: string!, $filter: AccountWorkersInvocationsAdaptiveFilter_InputObject) {
       viewer {
         accounts(filter: {accountTag: $accountId}) {
-          workersInvocationsAdaptiveGroups(limit: 10000, filter: $filter) {
+          workersInvocationsAdaptive(limit: 10000, filter: $filter) {
             sum { requests }
             dimensions { scriptName }
           }
@@ -240,12 +242,17 @@ async function getWorkersDetail(token, accountId, startDate, endDate) {
     if (data.errors) throw new Error(`明细查询错误: ${JSON.stringify(data.errors)}`);
     const accounts = data?.data?.viewer?.accounts;
     if (!accounts || accounts.length === 0) return [];
-    const groups = accounts[0].workersInvocationsAdaptiveGroups || [];
-    return groups
-        .map(g => ({
-            name: g.dimensions?.scriptName || 'unknown',
-            requests: g.sum?.requests || 0,
-        }))
+
+    const records = accounts[0].workersInvocationsAdaptive || [];
+    // 按 scriptName 汇总
+    const workerMap = {};
+    for (const rec of records) {
+        const name = rec.dimensions?.scriptName || 'unknown';
+        const reqs = rec.sum?.requests || 0;
+        workerMap[name] = (workerMap[name] || 0) + reqs;
+    }
+    return Object.entries(workerMap)
+        .map(([name, requests]) => ({ name, requests }))
         .filter(w => w.requests > 0)
         .sort((a, b) => b.requests - a.requests);
 }
