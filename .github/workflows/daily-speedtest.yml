@@ -1,0 +1,28 @@
+name: Daily CF Speed Test
+
+on:
+  schedule:
+    - cron: "0 0 * * *"   # 北京时间早上 8:00 (UTC 0:00)
+  workflow_dispatch:        # 可手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 创建结果目录
+        run: mkdir -p speedtest/output
+
+      - name: 扫描优选 IP
+        run: |
+          python cfip.py scan -n 3 -b 5 --repo $GITHUB_WORKSPACE --push
